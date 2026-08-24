@@ -4,15 +4,18 @@ llm.py
 รวมฟังก์ชันเรียก Google Gemini API สำหรับ:
 - embed_text: แปลงข้อความเป็นเวกเตอร์ (ใช้ทั้งตอน ingest และตอนค้นหา)
 - generate_answer: ให้ Gemini สรุปตอบคำถามเป็นภาษาไทย จากเนื้อหาที่ค้นมาได้
+
+หมายเหตุ: ใช้ SDK ตัวใหม่ "google-genai" (ตัวเก่า "google-generativeai" และโมเดล
+"text-embedding-004" ถูก Google เลิกใช้แล้ว)
 """
 
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
-genai.configure(api_key=st.secrets["gemini"]["api_key"])
-
-EMBEDDING_MODEL = "models/text-embedding-004"   # 768 มิติ, รองรับหลายภาษารวมไทย, ฟรี
-CHAT_MODEL = "gemini-2.0-flash"                 # เร็ว, ฟรี (โควต้าเยอะพอสำหรับใช้งานภายใน), รองรับไทยดี
+EMBEDDING_MODEL = "gemini-embedding-001"  # รุ่นปัจจุบัน (แทน text-embedding-004 ที่เลิกใช้แล้ว), รองรับไทย
+EMBEDDING_DIM = 768                        # ต้องตรงกับ vector(768) ใน supabase_setup.sql
+CHAT_MODEL = "gemini-2.5-flash"            # เร็ว, ฟรี (โควต้าเยอะพอสำหรับใช้งานภายใน), รองรับไทยดี
 
 SYSTEM_PROMPT = """คุณคือผู้ช่วยตอบคำถามจากคู่มือ/เอกสารขององค์กร
 กติกาสำคัญ:
@@ -23,20 +26,31 @@ SYSTEM_PROMPT = """คุณคือผู้ช่วยตอบคำถา�
 """
 
 
-def embed_text(text, task_type="retrieval_document"):
+@st.cache_resource
+def get_client():
+    return genai.Client(api_key=st.secrets["gemini"]["api_key"])
+
+
+def embed_text(text, task_type="RETRIEVAL_DOCUMENT"):
     """แปลงข้อความ 1 ชิ้นเป็นเวกเตอร์ 768 มิติ
-    task_type: 'retrieval_document' ตอน ingest เก็บเข้าคลัง, 'retrieval_query' ตอนค้นหาจากคำถาม
+    task_type: 'RETRIEVAL_DOCUMENT' ตอน ingest เก็บเข้าคลัง, 'RETRIEVAL_QUERY' ตอนค้นหาจากคำถาม
     """
-    result = genai.embed_content(
+    client = get_client()
+    result = client.models.embed_content(
         model=EMBEDDING_MODEL,
-        content=text,
-        task_type=task_type,
+        contents=text,
+        config=types.EmbedContentConfig(
+            task_type=task_type,
+            output_dimensionality=EMBEDDING_DIM,
+        ),
     )
-    return result["embedding"]
+    return result.embeddings[0].values
 
 
 def generate_answer(query, retrieved_chunks):
     """retrieved_chunks: list of dict {content, metadata} ที่ค้นมาได้จาก Supabase"""
+    client = get_client()
+
     context_blocks = []
     for chunk in retrieved_chunks:
         meta = chunk["metadata"]
@@ -45,15 +59,16 @@ def generate_answer(query, retrieved_chunks):
         )
     context = "\n\n---\n\n".join(context_blocks)
 
-    prompt = f"""{SYSTEM_PROMPT}
-
-เนื้อหาอ้างอิง:
+    prompt = f"""เนื้อหาอ้างอิง:
 {context}
 
 คำถาม: {query}
 
 ตอบเป็นภาษาไทย:"""
 
-    model = genai.GenerativeModel(CHAT_MODEL)
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model=CHAT_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+    )
     return response.text

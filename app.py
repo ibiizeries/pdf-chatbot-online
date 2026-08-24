@@ -44,7 +44,7 @@ def chat_page():
 
         with st.chat_message("assistant"):
             with st.spinner("กำลังค้นหาและสรุปคำตอบ..."):
-                query_embedding = embed_text(query, task_type="retrieval_query")
+                query_embedding = embed_text(query, task_type="RETRIEVAL_QUERY")
                 retrieved = db.match_documents(query_embedding, match_count=5)
 
                 if not retrieved:
@@ -126,7 +126,7 @@ def process_and_add_file(uploaded_file):
 
     for page_num, text in pages:
         for chunk in chunk_text(text):
-            embedding = embed_text(chunk, task_type="retrieval_document")
+            embedding = embed_text(chunk, task_type="RETRIEVAL_DOCUMENT")
             rows.append({
                 "content": chunk,
                 "metadata": {"source": filename, "page": page_num},
