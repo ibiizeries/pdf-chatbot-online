@@ -54,7 +54,7 @@ def chat_page():
             st.markdown(query)
 
         with st.chat_message("assistant"):
-            with st.spinner("กำลังค้นหาและสรุปคำตอบ..."):
+            with st.spinner("กำลังค้นหาและแปลเนื้อหาให้..."):
                 try:
                     query_embedding = embed_text(query, task_type="RETRIEVAL_QUERY")
                     retrieved = db.match_documents(query_embedding, match_count=5, source_filter=scope_filename)
