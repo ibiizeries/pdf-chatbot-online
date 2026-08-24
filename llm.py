@@ -93,9 +93,26 @@ def generate_answer(query, retrieved_chunks):
 
 ตอบเป็นภาษาไทย:"""
 
-    response = client.models.generate_content(
-        model=CHAT_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-    )
+    response = _generate_with_retry(client, prompt)
     return response.text
+
+
+def _generate_with_retry(client, prompt, max_retries=5):
+    """เรียก generate_content พร้อม retry เมื่อชน rate limit และโชว์ข้อความ error จริงถ้าพังด้วยสาเหตุอื่น"""
+    delay = 20
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=CHAT_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+            )
+        except ClientError as e:
+            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                if attempt == max_retries - 1:
+                    raise RuntimeError(f"เกินโควต้าการใช้งานโมเดลแชท ลองใหม่อีกครั้งภายหลัง: {e}") from e
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+                continue
+            # error อื่นที่ไม่ใช่ rate limit (เช่น ชื่อโมเดลผิด, API key ผิด) โยนข้อความจริงออกไปเลย
+            raise RuntimeError(f"เรียก Gemini ไม่สำเร็จ: {e}") from e

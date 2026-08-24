@@ -44,21 +44,25 @@ def chat_page():
 
         with st.chat_message("assistant"):
             with st.spinner("กำลังค้นหาและสรุปคำตอบ..."):
-                query_embedding = embed_text(query, task_type="RETRIEVAL_QUERY")
-                retrieved = db.match_documents(query_embedding, match_count=5)
+                try:
+                    query_embedding = embed_text(query, task_type="RETRIEVAL_QUERY")
+                    retrieved = db.match_documents(query_embedding, match_count=5)
 
-                if not retrieved:
-                    answer = "ยังไม่มีเอกสารในคลัง หรือไม่พบข้อมูลที่เกี่ยวข้องเลยครับ"
+                    if not retrieved:
+                        answer = "ยังไม่มีเอกสารในคลัง หรือไม่พบข้อมูลที่เกี่ยวข้องเลยครับ"
+                    else:
+                        answer = generate_answer(query, retrieved)
+                        with st.expander("🔍 ดูเนื้อหาอ้างอิงที่ใช้ตอบ"):
+                            for chunk in retrieved:
+                                meta = chunk["metadata"]
+                                st.markdown(f"**{meta.get('source')} หน้า {meta.get('page')}** (ความเกี่ยวข้อง {chunk['similarity']:.2f})")
+                                st.text(chunk["content"][:500])
+                                st.divider()
+                except Exception as e:
+                    answer = f"เกิดข้อผิดพลาด: {e}"
+                    st.error(answer)
                 else:
-                    answer = generate_answer(query, retrieved)
-                    with st.expander("🔍 ดูเนื้อหาอ้างอิงที่ใช้ตอบ"):
-                        for chunk in retrieved:
-                            meta = chunk["metadata"]
-                            st.markdown(f"**{meta.get('source')} หน้า {meta.get('page')}** (ความเกี่ยวข้อง {chunk['similarity']:.2f})")
-                            st.text(chunk["content"][:500])
-                            st.divider()
-
-                st.markdown(answer)
+                    st.markdown(answer)
 
         st.session_state.messages.append({"role": "assistant", "content": answer})
 
