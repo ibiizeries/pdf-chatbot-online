@@ -75,10 +75,16 @@ def library_page():
             accept_multiple_files=True,
         )
         if uploaded_files and st.button("เริ่มประมวลผลและเพิ่มเข้าคลัง"):
+            success_count = 0
             for f in uploaded_files:
-                process_and_add_file(f)
-            st.success("เพิ่มไฟล์เข้าคลังเรียบร้อยแล้ว")
-            st.rerun()
+                try:
+                    process_and_add_file(f)
+                    success_count += 1
+                except Exception as e:
+                    st.error(f"❌ {f.name}: {e}")
+            if success_count:
+                st.success(f"เพิ่มไฟล์เข้าคลังสำเร็จ {success_count} ไฟล์")
+                st.rerun()
 
         st.divider()
 

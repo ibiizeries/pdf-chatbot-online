@@ -18,7 +18,20 @@ BUCKET_NAME = "pdfs"
 def get_client():
     url = st.secrets["supabase"]["url"]
     key = st.secrets["supabase"]["service_key"]  # ใช้ service_role key เพราะแอปนี้จัดการเขียน/ลบข้อมูลเอง
-    return create_client(url, key)
+    client = create_client(url, key)
+    ensure_bucket_exists(client)
+    return client
+
+
+def ensure_bucket_exists(client):
+    """สร้าง bucket 'pdfs' อัตโนมัติถ้ายังไม่มี กันปัญหาลืมสร้างเองผ่านหน้าเว็บ Supabase"""
+    try:
+        existing = [b.name for b in client.storage.list_buckets()]
+        if BUCKET_NAME not in existing:
+            client.storage.create_bucket(BUCKET_NAME, options={"public": False})
+    except Exception as e:
+        # ถ้าสร้างไม่สำเร็จ (เช่น key ไม่มีสิทธิ์) จะไปเจอ error ตอน upload อีกที ซึ่งจะเห็นข้อความชัดเจนกว่า
+        st.warning(f"เช็ค/สร้าง storage bucket ไม่สำเร็จ: {e}")
 
 
 def list_files():
@@ -32,11 +45,15 @@ def upload_pdf_file(filename, file_bytes):
     """อัพโหลดไฟล์ PDF ต้นฉบับเก็บไว้ใน Storage bucket"""
     client = get_client()
     storage_path = f"{filename}"
-    client.storage.from_(BUCKET_NAME).upload(
-        storage_path,
-        file_bytes,
-        file_options={"content-type": "application/pdf", "upsert": "true"},
-    )
+    try:
+        client.storage.from_(BUCKET_NAME).upload(
+            storage_path,
+            file_bytes,
+            file_options={"content-type": "application/pdf", "upsert": "true"},
+        )
+    except Exception as e:
+        # โยน error พร้อมข้อความจริงออกมาให้เห็นในแอป แทนที่จะให้ Streamlit redact ทิ้ง
+        raise RuntimeError(f"อัพโหลดไฟล์ '{filename}' ไม่สำเร็จ: {e}") from e
     return storage_path
 
 
