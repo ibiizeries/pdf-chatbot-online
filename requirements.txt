@@ -1,4 +1,5 @@
-streamlit==1.39.0
-supabase==2.9.1
-google-generativeai==0.8.3
-PyMuPDF==1.24.11
+streamlit
+supabase
+google-generativeai
+PyMuPDF
+pillow>=11.0
