@@ -9,7 +9,7 @@ app.py
 import streamlit as st
 from auth import login_gate, logout_button
 from ingest_utils import extract_pages_from_bytes, chunk_text
-from llm import embed_text, generate_answer
+from llm import embed_text, embed_texts_batch, generate_answer
 import db
 
 st.set_page_config(page_title="AI Assistant - คู่มือองค์กร", page_icon="📄", layout="wide")
@@ -120,23 +120,37 @@ def process_and_add_file(uploaded_file):
     # เก็บไฟล์ต้นฉบับไว้ใน Storage
     db.upload_pdf_file(filename, file_bytes)
 
-    rows = []
-    total_chunks = sum(len(chunk_text(text)) for _, text in pages)
-    done = 0
-
+    # รวมทุกชิ้นเนื้อหาจากทุกหน้าไว้ก่อน แล้วค่อย embed เป็นชุดๆ (ลดจำนวน request ไปหา Gemini มาก)
+    all_chunks = []  # list of (page_num, chunk_text)
     for page_num, text in pages:
         for chunk in chunk_text(text):
-            embedding = embed_text(chunk, task_type="RETRIEVAL_DOCUMENT")
-            rows.append({
+            all_chunks.append((page_num, chunk))
+
+    total_chunks = len(all_chunks)
+    BATCH_SIZE = 20  # ส่ง 20 ชิ้นต่อ 1 request แทนที่จะส่งทีละชิ้น (314 ชิ้น -> ~16 request แทน 314 request)
+    done = 0
+    total_rows = 0
+
+    for i in range(0, total_chunks, BATCH_SIZE):
+        batch = all_chunks[i:i + BATCH_SIZE]
+        texts = [c for _, c in batch]
+        embeddings = embed_texts_batch(texts, task_type="RETRIEVAL_DOCUMENT")
+
+        rows = [
+            {
                 "content": chunk,
                 "metadata": {"source": filename, "page": page_num},
                 "embedding": embedding,
-            })
-            done += 1
-            progress.progress(done / total_chunks, text=f"กำลังทำ index {filename} ({done}/{total_chunks})")
+            }
+            for (page_num, chunk), embedding in zip(batch, embeddings)
+        ]
+        db.insert_chunks(rows)  # บันทึกทันทีทีละ batch กันข้อมูลหายถ้าไฟล์หลังๆ error
+        total_rows += len(rows)
 
-    db.insert_chunks(rows)
-    db.register_pdf_file(filename, filename, page_count, len(rows))
+        done += len(batch)
+        progress.progress(done / total_chunks, text=f"กำลังทำ index {filename} ({done}/{total_chunks})")
+
+    db.register_pdf_file(filename, filename, page_count, total_rows)
     progress.empty()
 
 
