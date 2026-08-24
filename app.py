@@ -29,6 +29,17 @@ page = st.sidebar.radio("เมนู", pages)
 def chat_page():
     st.title("📄 ผู้ช่วยตอบคำถามจากคู่มือ (ตอบเป็นภาษาไทย)")
 
+    files = db.list_files()
+    filenames = [f["filename"] for f in files]
+    options = ["📚 ทุกคู่มือในคลัง"] + filenames
+    selected = st.selectbox("เลือกขอบเขตที่จะถาม", options)
+    scope_filename = None if selected == options[0] else selected
+
+    if scope_filename:
+        st.caption(f"🔒 กำลังถามเฉพาะคู่มือ **{scope_filename}** เท่านั้น คำตอบจะไม่ปนข้อมูลจากไฟล์อื่น")
+    else:
+        st.caption("กำลังค้นจากคู่มือทุกไฟล์ในคลัง")
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -46,12 +57,15 @@ def chat_page():
             with st.spinner("กำลังค้นหาและสรุปคำตอบ..."):
                 try:
                     query_embedding = embed_text(query, task_type="RETRIEVAL_QUERY")
-                    retrieved = db.match_documents(query_embedding, match_count=5)
+                    retrieved = db.match_documents(query_embedding, match_count=5, source_filter=scope_filename)
 
                     if not retrieved:
-                        answer = "ยังไม่มีเอกสารในคลัง หรือไม่พบข้อมูลที่เกี่ยวข้องเลยครับ"
+                        if scope_filename:
+                            answer = f"ไม่พบข้อมูลที่เกี่ยวข้องในคู่มือ '{scope_filename}' ครับ ลองเปลี่ยนคำถาม หรือสลับไปเลือก '📚 ทุกคู่มือในคลัง' ดู"
+                        else:
+                            answer = "ยังไม่มีเอกสารในคลัง หรือไม่พบข้อมูลที่เกี่ยวข้องเลยครับ"
                     else:
-                        answer = generate_answer(query, retrieved)
+                        answer = generate_answer(query, retrieved, scope_filename=scope_filename)
                         with st.expander("🔍 ดูเนื้อหาอ้างอิงที่ใช้ตอบ"):
                             for chunk in retrieved:
                                 meta = chunk["metadata"]

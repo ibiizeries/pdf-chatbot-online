@@ -17,7 +17,7 @@ from google.genai.errors import ClientError
 
 EMBEDDING_MODEL = "gemini-embedding-001"  # รุ่นปัจจุบัน (แทน text-embedding-004 ที่เลิกใช้แล้ว), รองรับไทย
 EMBEDDING_DIM = 768                        # ต้องตรงกับ vector(768) ใน supabase_setup.sql
-CHAT_MODEL = "gemini-2.5-flash"            # เร็ว, ฟรี (โควต้าเยอะพอสำหรับใช้งานภายใน), รองรับไทยดี
+CHAT_MODEL = "gemini-3.6-flash"            # เร็ว, ฟรี (โควต้าเยอะพอสำหรับใช้งานภายใน), รองรับไทยดี
 
 SYSTEM_PROMPT = """คุณคือผู้ช่วยตอบคำถามจากคู่มือ/เอกสารขององค์กร
 กติกาสำคัญ:
@@ -74,8 +74,10 @@ def embed_texts_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
     return _embed_with_retry(client, texts, task_type)
 
 
-def generate_answer(query, retrieved_chunks):
-    """retrieved_chunks: list of dict {content, metadata} ที่ค้นมาได้จาก Supabase"""
+def generate_answer(query, retrieved_chunks, scope_filename=None):
+    """retrieved_chunks: list of dict {content, metadata} ที่ค้นมาได้จาก Supabase
+    scope_filename: ถ้าระบุ จะเน้นย้ำให้ AI ตอบจากคู่มือไฟล์นี้เท่านั้น ห้ามใช้ข้อมูลจากไฟล์อื่นปนมาตอบ
+    """
     client = get_client()
 
     context_blocks = []
@@ -86,6 +88,16 @@ def generate_answer(query, retrieved_chunks):
         )
     context = "\n\n---\n\n".join(context_blocks)
 
+    scope_instruction = ""
+    if scope_filename:
+        scope_instruction = (
+            f"\n5. ผู้ใช้เลือกถามเฉพาะคู่มือ '{scope_filename}' เท่านั้น "
+            f"เนื้อหาอ้างอิงที่ให้มาด้านล่างทั้งหมดมาจากไฟล์นี้อยู่แล้ว "
+            f"ห้ามอ้างอิงหรือปนข้อมูลจากคู่มือ/ไฟล์อื่นเข้ามาตอบเด็ดขาด "
+            f"ถ้าคำถามนี้ไม่มีคำตอบอยู่ในคู่มือ '{scope_filename}' ให้บอกตรงๆ ว่าไม่พบในคู่มือเล่มนี้ "
+            f"(ต่อให้รู้คำตอบจากคู่มือเล่มอื่นก็ห้ามตอบ)"
+        )
+
     prompt = f"""เนื้อหาอ้างอิง:
 {context}
 
@@ -93,19 +105,20 @@ def generate_answer(query, retrieved_chunks):
 
 ตอบเป็นภาษาไทย:"""
 
-    response = _generate_with_retry(client, prompt)
+    response = _generate_with_retry(client, prompt, extra_system_instruction=scope_instruction)
     return response.text
 
 
-def _generate_with_retry(client, prompt, max_retries=5):
+def _generate_with_retry(client, prompt, extra_system_instruction="", max_retries=5):
     """เรียก generate_content พร้อม retry เมื่อชน rate limit และโชว์ข้อความ error จริงถ้าพังด้วยสาเหตุอื่น"""
+    system_instruction = SYSTEM_PROMPT + extra_system_instruction
     delay = 20
     for attempt in range(max_retries):
         try:
             return client.models.generate_content(
                 model=CHAT_MODEL,
                 contents=prompt,
-                config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+                config=types.GenerateContentConfig(system_instruction=system_instruction),
             )
         except ClientError as e:
             if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):

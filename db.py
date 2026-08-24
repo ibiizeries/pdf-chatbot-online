@@ -84,10 +84,21 @@ def delete_file(filename):
     client.table("pdf_files").delete().eq("filename", filename).execute()
 
 
-def match_documents(query_embedding, match_count=5):
+def match_documents(query_embedding, match_count=5, source_filter=None):
+    """ค้นหาชิ้นเนื้อหาที่เกี่ยวข้องที่สุด
+    source_filter: ถ้าระบุชื่อไฟล์ จะค้นเฉพาะในไฟล์นั้นไฟล์เดียว (ไม่ปนไฟล์อื่น)
+    """
     client = get_client()
+    # ถ้าต้องกรองเฉพาะไฟล์ ให้ดึงผลมาเยอะกว่าปกติก่อน แล้วค่อยกรอง+ตัดเหลือ match_count
+    fetch_count = match_count * 6 if source_filter else match_count
     result = client.rpc("match_documents", {
         "query_embedding": query_embedding,
-        "match_count": match_count,
+        "match_count": fetch_count,
     }).execute()
-    return result.data
+    data = result.data
+
+    if source_filter:
+        data = [row for row in data if row["metadata"].get("source") == source_filter]
+        data = data[:match_count]
+
+    return data
