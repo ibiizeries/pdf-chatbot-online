@@ -1,0 +1,76 @@
+"""
+db.py
+-----
+รวมฟังก์ชันเชื่อมต่อ Supabase สำหรับ:
+- อัพโหลด/ลบไฟล์ PDF ต้นฉบับใน Storage bucket
+- เพิ่ม/ลบชิ้นเนื้อหา (chunk + embedding) ในตาราง documents
+- ค้นหาชิ้นเนื้อหาที่เกี่ยวข้องกับคำถาม (match_documents)
+- ดึงรายชื่อไฟล์ทั้งหมดในคลัง (สำหรับหน้าจัดการคลัง)
+"""
+
+import streamlit as st
+from supabase import create_client
+
+BUCKET_NAME = "pdfs"
+
+
+@st.cache_resource
+def get_client():
+    url = st.secrets["supabase"]["url"]
+    key = st.secrets["supabase"]["service_key"]  # ใช้ service_role key เพราะแอปนี้จัดการเขียน/ลบข้อมูลเอง
+    return create_client(url, key)
+
+
+def list_files():
+    """คืนรายชื่อไฟล์ทั้งหมดในคลัง เรียงตามวันที่อัพโหลดล่าสุดก่อน"""
+    client = get_client()
+    result = client.table("pdf_files").select("*").order("uploaded_at", desc=True).execute()
+    return result.data
+
+
+def upload_pdf_file(filename, file_bytes):
+    """อัพโหลดไฟล์ PDF ต้นฉบับเก็บไว้ใน Storage bucket"""
+    client = get_client()
+    storage_path = f"{filename}"
+    client.storage.from_(BUCKET_NAME).upload(
+        storage_path,
+        file_bytes,
+        file_options={"content-type": "application/pdf", "upsert": "true"},
+    )
+    return storage_path
+
+
+def register_pdf_file(filename, storage_path, page_count, chunk_count):
+    client = get_client()
+    client.table("pdf_files").upsert({
+        "filename": filename,
+        "storage_path": storage_path,
+        "page_count": page_count,
+        "chunk_count": chunk_count,
+    }, on_conflict="filename").execute()
+
+
+def insert_chunks(rows):
+    """rows: list of dict {content, metadata, embedding}"""
+    client = get_client()
+    # แทรกเป็นชุดๆ ละ 100 แถว กัน request ใหญ่เกินไป
+    batch_size = 100
+    for i in range(0, len(rows), batch_size):
+        client.table("documents").insert(rows[i:i + batch_size]).execute()
+
+
+def delete_file(filename):
+    """ลบไฟล์ออกจากคลังทั้งหมด: ไฟล์ใน storage, ชิ้นเนื้อหาใน documents, และรายการใน pdf_files"""
+    client = get_client()
+    client.storage.from_(BUCKET_NAME).remove([filename])
+    client.table("documents").delete().eq("metadata->>source", filename).execute()
+    client.table("pdf_files").delete().eq("filename", filename).execute()
+
+
+def match_documents(query_embedding, match_count=5):
+    client = get_client()
+    result = client.rpc("match_documents", {
+        "query_embedding": query_embedding,
+        "match_count": match_count,
+    }).execute()
+    return result.data
