@@ -14,9 +14,7 @@ def login_gate():
     if st.session_state.get("logged_in"):
         return True
 
-    if "dark_mode" not in st.session_state:
-        st.session_state.dark_mode = False
-    st.markdown(get_css(st.session_state.dark_mode), unsafe_allow_html=True)
+    st.markdown(get_css(), unsafe_allow_html=True)
 
     _, col, _ = st.columns([1, 1.2, 1])
     with col:

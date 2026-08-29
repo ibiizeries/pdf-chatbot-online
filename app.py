@@ -32,8 +32,6 @@ SUGGESTIONS = [
 ]
 
 # ---------------- state เริ่มต้น ----------------
-if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
 if "current_scope" not in st.session_state:
     st.session_state.current_scope = GENERAL_SCOPE
 if "chat_store" not in st.session_state:
@@ -41,7 +39,7 @@ if "chat_store" not in st.session_state:
 if "pending_query" not in st.session_state:
     st.session_state.pending_query = None
 
-st.markdown(get_css(st.session_state.dark_mode), unsafe_allow_html=True)
+st.markdown(get_css(), unsafe_allow_html=True)
 
 is_admin = st.session_state.role == "admin"
 
@@ -169,17 +167,10 @@ def render_sidebar(files):
         st.markdown("---")
         st.markdown(f"<span class='role-badge'>บทบาท: {st.session_state.role}</span>", unsafe_allow_html=True)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            icon = "🌙" if not st.session_state.dark_mode else "☀️"
-            if st.button(f"{icon} โหมด", use_container_width=True):
-                st.session_state.dark_mode = not st.session_state.dark_mode
-                st.rerun()
-        with col2:
-            if st.button("ออกจากระบบ", use_container_width=True):
-                st.session_state.logged_in = False
-                st.session_state.role = None
-                st.rerun()
+        if st.button("ออกจากระบบ", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.role = None
+            st.rerun()
 
 
 # ---------------- ตอบคำถาม ----------------
@@ -214,7 +205,16 @@ def chat_page(files):
     messages = st.session_state.chat_store[scope]
 
     header = "คำถามทั่วไป (ทุกคู่มือ)" if scope_filename is None else scope_filename
-    st.markdown(f"#### {'💬' if scope_filename is None else '📄'} {header}")
+    col_title, col_clear = st.columns([6, 1.3])
+    with col_title:
+        st.markdown(f"#### {'💬' if scope_filename is None else '📄'} {header}")
+    with col_clear:
+        if messages:
+            st.markdown('<div class="clear-btn">', unsafe_allow_html=True)
+            if st.button("🗑️ ล้างแชท", key=f"clear_{scope}", use_container_width=True):
+                st.session_state.chat_store[scope] = []
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
 
     if not messages:
         st.markdown(f"""
