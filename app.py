@@ -13,7 +13,7 @@ import html
 import streamlit as st
 from auth import login_gate
 from ingest_utils import extract_pages_from_bytes, chunk_text
-from llm import embed_text, embed_texts_batch, generate_answer
+from llm import embed_text, embed_texts_batch, generate_answer, expand_query
 from theme import get_css
 import db
 
@@ -177,8 +177,21 @@ def render_sidebar(files):
 def answer_query(query, scope_filename, messages):
     messages.append({"role": "user", "content": query})
     try:
-        query_embedding = embed_text(query, task_type="RETRIEVAL_QUERY")
-        retrieved = db.match_documents(query_embedding, match_count=5, source_filter=scope_filename)
+        # ตีความคำถามภาษาพูดเป็นคำค้นหาทางเลือกเพิ่มเติม เพิ่มโอกาสเจอเนื้อหาที่เกี่ยวข้อง
+        # แม้คู่มือจะใช้คำศัพท์/ชื่อหัวข้อไม่ตรงกับคำถามเป๊ะๆ
+        alt_queries = expand_query(query, n=3)
+        search_terms = [query] + [q for q in alt_queries if q.lower() != query.lower()]
+
+        merged = {}
+        for term in search_terms:
+            term_embedding = embed_text(term, task_type="RETRIEVAL_QUERY")
+            results = db.match_documents(term_embedding, match_count=5, source_filter=scope_filename)
+            for r in results:
+                rid = r["id"]
+                if rid not in merged or r["similarity"] > merged[rid]["similarity"]:
+                    merged[rid] = r
+
+        retrieved = sorted(merged.values(), key=lambda r: r["similarity"], reverse=True)[:8]
 
         if not retrieved:
             if scope_filename:

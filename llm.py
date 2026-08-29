@@ -10,6 +10,7 @@ llm.py
 """
 
 import time
+import json
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -77,6 +78,36 @@ def embed_texts_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
     """
     client = get_client()
     return _embed_with_retry(client, texts, task_type)
+
+
+def expand_query(query, n=3):
+    """ใช้ Gemini ช่วยตีความคำถามภาษาพูด แล้วสร้างคำค้นหาทางเลือกเพิ่มเติม
+    เพื่อเพิ่มโอกาสค้นเจอเนื้อหาที่เกี่ยวข้อง แม้คู่มือจะใช้คำศัพท์/หัวข้อไม่ตรงกับคำถามเป๊ะๆ
+    เช่น ถามว่า "ตรวจสอบระบบหล่อลื่นทำอย่างไร" แต่คู่มือใช้หัวข้อว่า "8.3 การหล่อลื่น"
+    คืนค่า list ของคำค้นหาทางเลือก (ไม่รวมคำถามต้นฉบับ) ถ้าล้มเหลวคืนค่า list ว่าง (ไม่กระทบการทำงานหลัก)
+    """
+    client = get_client()
+    prompt = f"""ผู้ใช้ถามคำถามนี้กับคู่มือทางเทคนิค: "{query}"
+
+ช่วยสร้างคำค้นหา (คำหรือวลีสั้นๆ) ที่มีความหมายใกล้เคียงหรือเกี่ยวข้องกับคำถามนี้ {n} แบบ
+เพื่อเพิ่มโอกาสค้นเจอเนื้อหาที่เกี่ยวข้องในคู่มือ แม้คู่มือจะใช้คำศัพท์หรือชื่อหัวข้อไม่ตรงกับคำถามเป๊ะๆ
+ตัวอย่าง: ถ้าถาม "การตรวจสอบระบบหล่อลื่นทำอย่างไร" อาจได้คำค้นหาเช่น "การหล่อลื่น", "จุดหล่อลื่น", "รอบการหล่อลื่น"
+
+ตอบเป็น JSON array ของ string เท่านั้น ห้ามมีคำอธิบายหรือข้อความอื่นปน เช่น ["คำ1", "คำ2", "คำ3"]"""
+
+    try:
+        response = client.models.generate_content(model=CHAT_MODEL, contents=prompt)
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if "\n" in text:
+                text = text.split("\n", 1)[1]
+        alternatives = json.loads(text)
+        if isinstance(alternatives, list):
+            return [str(a).strip() for a in alternatives if str(a).strip()][:n]
+    except Exception:
+        pass
+    return []
 
 
 def generate_answer(query, retrieved_chunks, scope_filename=None):
