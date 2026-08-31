@@ -1,24 +1,21 @@
 """
 llm.py
 ------
-รวมฟังก์ชันเรียก Google Gemini API สำหรับ:
-- embed_text: แปลงข้อความเป็นเวกเตอร์ (ใช้ทั้งตอน ingest และตอนค้นหา)
-- generate_answer: ให้ Gemini สรุปตอบคำถามเป็นภาษาไทย จากเนื้อหาที่ค้นมาได้
+ส่วนตอบคำถาม (chat/generation) ใช้ Groq API แทน Google Gemini
+เหตุผล: โควต้าฟรีของ Groq กว้างกว่ามาก (14,400 request/วัน, 30,000 token/นาที)
+เหมาะกับตอนใช้งานจริงที่มีคนถามพร้อมกันหลายคน
+(ส่วน embedding ย้ายไปรันแบบ local ทั้งหมดแล้ว ดูที่ local_embed.py)
 
-หมายเหตุ: ใช้ SDK ตัวใหม่ "google-genai" (ตัวเก่า "google-generativeai" และโมเดล
-"text-embedding-004" ถูก Google เลิกใช้แล้ว)
+โมเดลที่ใช้: openai/gpt-oss-120b (โมเดลที่ Groq แนะนำปัจจุบัน หลังเลิกใช้ llama-3.3-70b-versatile
+ตั้งแต่กลางปี 2026) ให้คุณภาพดี รองรับหลายภาษารวมไทย
 """
 
 import time
 import json
 import streamlit as st
-from google import genai
-from google.genai import types
-from google.genai.errors import ClientError
+from groq import Groq
 
-EMBEDDING_MODEL = "gemini-embedding-001"  # รุ่นปัจจุบัน (แทน text-embedding-004 ที่เลิกใช้แล้ว), รองรับไทย
-EMBEDDING_DIM = 768                        # ต้องตรงกับ vector(768) ใน supabase_setup.sql
-CHAT_MODEL = "gemini-3.6-flash"            # เร็ว, ฟรี (โควต้าเยอะพอสำหรับใช้งานภายใน), รองรับไทยดี
+CHAT_MODEL = "openai/gpt-oss-120b"  # ถ้าอยากได้เร็วขึ้น (แลกคุณภาพนิดหน่อย) เปลี่ยนเป็น "openai/gpt-oss-20b" ได้
 
 SYSTEM_PROMPT = """คุณคือผู้ช่วยตอบคำถามจากคู่มือ/เอกสารขององค์กร
 กติกาสำคัญ:
@@ -36,57 +33,37 @@ SYSTEM_PROMPT = """คุณคือผู้ช่วยตอบคำถา�
 
 @st.cache_resource
 def get_client():
-    return genai.Client(api_key=st.secrets["gemini"]["api_key"])
+    return Groq(api_key=st.secrets["groq"]["api_key"])
 
 
-def _embed_with_retry(client, texts, task_type, max_retries=5):
-    """เรียก embed_content พร้อม retry แบบ exponential backoff เมื่อชน rate limit (429)"""
-    delay = 20
+def _chat_with_retry(messages, max_retries=5):
+    """เรียก chat completion พร้อม retry เมื่อชน rate limit (429) และโชว์ข้อความ error จริงถ้าพังด้วยสาเหตุอื่น"""
+    client = get_client()
+    delay = 15
     for attempt in range(max_retries):
         try:
-            result = client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=texts,
-                config=types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=EMBEDDING_DIM,
-                ),
+            response = client.chat.completions.create(
+                model=CHAT_MODEL,
+                messages=messages,
             )
-            return [e.values for e in result.embeddings]
-        except ClientError as e:
-            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+            return response.choices[0].message.content
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "rate_limit" in msg.lower():
                 if attempt == max_retries - 1:
-                    raise
+                    raise RuntimeError(f"เกินโควต้าการใช้งานโมเดลแชท ลองใหม่อีกครั้งภายหลัง: {e}") from e
                 time.sleep(delay)
                 delay = min(delay * 2, 60)
                 continue
-            raise
+            raise RuntimeError(f"เรียก Groq ไม่สำเร็จ: {e}") from e
     raise RuntimeError("เกินโควต้าซ้ำหลายครั้ง ลองใหม่อีกครั้งภายหลัง")
 
 
-def embed_text(text, task_type="RETRIEVAL_DOCUMENT"):
-    """แปลงข้อความ 1 ชิ้นเป็นเวกเตอร์ 768 มิติ (ใช้ตอนค้นหาจากคำถาม ซึ่งมีแค่ 1 ครั้งต่อคำถาม)
-    task_type: 'RETRIEVAL_DOCUMENT' ตอน ingest เก็บเข้าคลัง, 'RETRIEVAL_QUERY' ตอนค้นหาจากคำถาม
-    """
-    client = get_client()
-    return _embed_with_retry(client, [text], task_type)[0]
-
-
-def embed_texts_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
-    """แปลงข้อความหลายชิ้นพร้อมกันในคำขอเดียว (ลดจำนวน request ลงมาก เทียบกับส่งทีละชิ้น)
-    ใช้ตอน ingest ไฟล์ PDF ที่มีชิ้นเนื้อหาเยอะๆ
-    """
-    client = get_client()
-    return _embed_with_retry(client, texts, task_type)
-
-
 def expand_query(query, n=3):
-    """ใช้ Gemini ช่วยตีความคำถามภาษาพูด แล้วสร้างคำค้นหาทางเลือกเพิ่มเติม
+    """ใช้โมเดลแชทช่วยตีความคำถามภาษาพูด แล้วสร้างคำค้นหาทางเลือกเพิ่มเติม
     เพื่อเพิ่มโอกาสค้นเจอเนื้อหาที่เกี่ยวข้อง แม้คู่มือจะใช้คำศัพท์/หัวข้อไม่ตรงกับคำถามเป๊ะๆ
-    เช่น ถามว่า "ตรวจสอบระบบหล่อลื่นทำอย่างไร" แต่คู่มือใช้หัวข้อว่า "8.3 การหล่อลื่น"
-    คืนค่า list ของคำค้นหาทางเลือก (ไม่รวมคำถามต้นฉบับ) ถ้าล้มเหลวคืนค่า list ว่าง (ไม่กระทบการทำงานหลัก)
+    คืนค่า list ของคำค้นหาทางเลือก ถ้าล้มเหลวคืนค่า list ว่าง (ไม่กระทบการทำงานหลัก)
     """
-    client = get_client()
     prompt = f"""ผู้ใช้ถามคำถามนี้กับคู่มือทางเทคนิค: "{query}"
 
 ช่วยสร้างคำค้นหา (คำหรือวลีสั้นๆ) ที่มีความหมายใกล้เคียงหรือเกี่ยวข้องกับคำถามนี้ {n} แบบ
@@ -96,8 +73,7 @@ def expand_query(query, n=3):
 ตอบเป็น JSON array ของ string เท่านั้น ห้ามมีคำอธิบายหรือข้อความอื่นปน เช่น ["คำ1", "คำ2", "คำ3"]"""
 
     try:
-        response = client.models.generate_content(model=CHAT_MODEL, contents=prompt)
-        text = response.text.strip()
+        text = _chat_with_retry([{"role": "user", "content": prompt}], max_retries=2).strip()
         if text.startswith("```"):
             text = text.strip("`")
             if "\n" in text:
@@ -114,8 +90,6 @@ def generate_answer(query, retrieved_chunks, scope_filename=None):
     """retrieved_chunks: list of dict {content, metadata} ที่ค้นมาได้จาก Supabase
     scope_filename: ถ้าระบุ จะเน้นย้ำให้ AI ตอบจากคู่มือไฟล์นี้เท่านั้น ห้ามใช้ข้อมูลจากไฟล์อื่นปนมาตอบ
     """
-    client = get_client()
-
     context_blocks = []
     for chunk in retrieved_chunks:
         meta = chunk["metadata"]
@@ -141,27 +115,8 @@ def generate_answer(query, retrieved_chunks, scope_filename=None):
 
 ตอบเป็นภาษาไทย โดยแปลเนื้อหาที่เกี่ยวข้องแบบตรงตามต้นฉบับ ครบถ้วน ไม่สรุปย่อ:"""
 
-    response = _generate_with_retry(client, prompt, extra_system_instruction=scope_instruction)
-    return response.text
-
-
-def _generate_with_retry(client, prompt, extra_system_instruction="", max_retries=5):
-    """เรียก generate_content พร้อม retry เมื่อชน rate limit และโชว์ข้อความ error จริงถ้าพังด้วยสาเหตุอื่น"""
-    system_instruction = SYSTEM_PROMPT + extra_system_instruction
-    delay = 20
-    for attempt in range(max_retries):
-        try:
-            return client.models.generate_content(
-                model=CHAT_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(system_instruction=system_instruction),
-            )
-        except ClientError as e:
-            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
-                if attempt == max_retries - 1:
-                    raise RuntimeError(f"เกินโควต้าการใช้งานโมเดลแชท ลองใหม่อีกครั้งภายหลัง: {e}") from e
-                time.sleep(delay)
-                delay = min(delay * 2, 60)
-                continue
-            # error อื่นที่ไม่ใช่ rate limit (เช่น ชื่อโมเดลผิด, API key ผิด) โยนข้อความจริงออกไปเลย
-            raise RuntimeError(f"เรียก Gemini ไม่สำเร็จ: {e}") from e
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT + scope_instruction},
+        {"role": "user", "content": prompt},
+    ]
+    return _chat_with_retry(messages)

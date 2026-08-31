@@ -1,5 +1,6 @@
 streamlit
 supabase
-google-genai
+groq
+fastembed
 PyMuPDF
 pillow>=11.0

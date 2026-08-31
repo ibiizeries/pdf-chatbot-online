@@ -13,7 +13,8 @@ import html
 import streamlit as st
 from auth import login_gate
 from ingest_utils import extract_pages_from_bytes, chunk_text
-from llm import embed_text, embed_texts_batch, generate_answer, expand_query
+from local_embed import embed_texts_batch
+from llm import generate_answer, expand_query
 from theme import get_css
 import db
 
@@ -86,7 +87,7 @@ def process_and_add_file(uploaded_file):
             all_chunks.append((page_num, chunk))
 
     total_chunks = len(all_chunks)
-    BATCH_SIZE = 20
+    BATCH_SIZE = 100  # ส่ง 100 ชิ้นต่อ 1 request (โควต้ารายวันนับจำนวน request ไม่ใช่จำนวนข้อความ ยิ่ง batch ใหญ่ยิ่งประหยัดโควต้า)
     done = 0
     total_rows = 0
 
@@ -199,8 +200,8 @@ def answer_query(query, scope_filename, messages):
         search_terms = [query] + [q for q in alt_queries if q.lower() != query.lower()]
 
         merged = {}
-        for term in search_terms:
-            term_embedding = embed_text(term, task_type="RETRIEVAL_QUERY")
+        term_embeddings = embed_texts_batch(search_terms, task_type="RETRIEVAL_QUERY")
+        for term_embedding in term_embeddings:
             results = db.match_documents(term_embedding, match_count=5, source_filter=scope_filename)
             for r in results:
                 rid = r["id"]
