@@ -113,6 +113,25 @@ def process_and_add_file(uploaded_file):
     progress.empty()
 
 
+# ---------------- dialog ยืนยันการลบไฟล์ (admin) ----------------
+@st.dialog("ยืนยันการลบคู่มือ")
+def confirm_delete_dialog(filename):
+    st.write(f"ต้องการลบคู่มือ **{filename}** ออกจากคลังใช่ไหม?")
+    st.caption("การลบจะลบทั้งไฟล์ต้นฉบับและข้อมูลที่ใช้ค้นหาทั้งหมดของไฟล์นี้ **กู้คืนไม่ได้**")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("ยกเลิก", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("ลบไฟล์นี้", type="primary", use_container_width=True):
+            db.delete_file(filename)
+            st.session_state.chat_store.pop(filename, None)
+            if st.session_state.current_scope == filename:
+                st.session_state.current_scope = GENERAL_SCOPE
+            st.success(f"ลบ {filename} แล้ว")
+            st.rerun()
+
+
 # ---------------- Sidebar ----------------
 def render_sidebar(files):
     with st.sidebar:
@@ -153,15 +172,12 @@ def render_sidebar(files):
         if is_admin and files:
             with st.expander("🗂️ จัดการคลังไฟล์"):
                 for f in files:
-                    c1, c2 = st.columns([4, 1])
-                    c1.caption(f"{f['filename']} · {f.get('page_count', '-')} หน้า")
-                    if c2.button("ลบ", key=f"del_{f['filename']}"):
-                        db.delete_file(f["filename"])
-                        st.session_state.chat_store.pop(f["filename"], None)
-                        if st.session_state.current_scope == f["filename"]:
-                            st.session_state.current_scope = GENERAL_SCOPE
-                        st.success(f"ลบ {f['filename']} แล้ว")
-                        st.rerun()
+                    st.caption(f"📄 {f['filename']} · {f.get('page_count', '-')} หน้า")
+                    st.markdown('<div class="file-del-btn">', unsafe_allow_html=True)
+                    if st.button("🗑️ ลบไฟล์นี้", key=f"del_{f['filename']}", use_container_width=True):
+                        confirm_delete_dialog(f["filename"])
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    st.write("")
 
         st.write("")
         st.markdown("---")

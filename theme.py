@@ -107,6 +107,23 @@ p, span, label, .stMarkdown {{ color: {c["text"]}; }}
     background-color: #FDEDEB !important;
 }}
 
+/* ปุ่มลบไฟล์ในคลัง (เล็ก ไม่ตกบรรทัด) */
+.file-del-btn button {{
+    white-space: nowrap !important;
+    padding: 0.25rem 0.6rem !important;
+    font-size: 0.8rem !important;
+    justify-content: center !important;
+    color: {c["text_muted"]} !important;
+    border: 1px solid {c["border"]} !important;
+    min-width: 0 !important;
+}}
+.file-del-btn button p {{ white-space: nowrap !important; margin: 0 !important; }}
+.file-del-btn button:hover {{
+    color: #C0392B !important;
+    border-color: #C0392B !important;
+    background-color: #FDEDEB !important;
+}}
+
 [data-testid="stChatMessage"] {{
     background-color: {c["assistant_bubble"]};
     border: 1px solid {c["border"]};
