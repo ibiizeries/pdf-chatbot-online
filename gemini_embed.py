@@ -3,7 +3,15 @@ gemini_embed.py
 ----------------
 Embedding ผ่าน Google Gemini API (โมเดล gemini-embedding-001, 768 มิติ)
 แยกออกมาจาก llm.py (ซึ่งตอนนี้ใช้ Groq สำหรับส่วนตอบคำถามแทน)
-มี retry อัตโนมัติเมื่อชน rate limit (429)
+
+รองรับ "หลาย API key" สลับอัตโนมัติ: ถ้า key แรกชนโควต้ารายวัน (RESOURCE_EXHAUSTED)
+ระบบจะลอง key ถัดไปทันทีโดยไม่ต้องรอ (ปลอดภัยเพราะยังเป็นโมเดลเดียวกันเป๊ะ 768 มิติเท่ากัน
+ไม่เหมือนการสลับไป embedding provider เจ้าอื่นที่จะทำให้เวกเตอร์เข้ากันไม่ได้กับของเดิม)
+
+วิธีใส่หลาย key ใน secrets.toml:
+    [gemini]
+    api_keys = ["key-หลัก-ฟรี", "key-สำรอง-อาจเป็น key ที่เปิด billing แล้วก็ได้"]
+(หรือใส่แบบเดิม api_key = "..." ตัวเดียวก็ยังใช้ได้ ระบบรองรับทั้งสองแบบ)
 """
 
 import time
@@ -16,45 +24,80 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIM = 768  # ต้องตรงกับ vector(768) ใน supabase_setup.sql
 
 
+def _get_api_keys():
+    """อ่านรายชื่อ API key จาก secrets รองรับทั้งแบบ list (api_keys) และแบบเดี่ยว (api_key)"""
+    gemini_secrets = st.secrets["gemini"]
+    if "api_keys" in gemini_secrets:
+        keys = [k for k in gemini_secrets["api_keys"] if k]
+    elif "api_key" in gemini_secrets:
+        keys = [gemini_secrets["api_key"]]
+    else:
+        keys = []
+    if not keys:
+        raise RuntimeError("ยังไม่ได้ตั้งค่า Gemini API key ใน Secrets (ใส่ [gemini] api_key หรือ api_keys)")
+    return keys
+
+
 @st.cache_resource
-def get_client():
-    return genai.Client(api_key=st.secrets["gemini"]["api_key"])
+def _get_clients():
+    return [genai.Client(api_key=k) for k in _get_api_keys()]
 
 
-def _embed_with_retry(client, texts, task_type, max_retries=5):
-    """เรียก embed_content พร้อม retry แบบ exponential backoff เมื่อชน rate limit (429)"""
-    delay = 20
-    for attempt in range(max_retries):
-        try:
-            result = client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=texts,
-                config=types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=EMBEDDING_DIM,
-                ),
-            )
-            return [e.values for e in result.embeddings]
-        except ClientError as e:
-            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
-                if attempt == max_retries - 1:
-                    raise
-                time.sleep(delay)
-                delay = min(delay * 2, 60)
-                continue
-            raise
-    raise RuntimeError("เกินโควต้าซ้ำหลายครั้ง ลองใหม่อีกครั้งภายหลัง")
+def _is_daily_quota_error(msg):
+    """เช็คว่า error นี้เป็นโควต้า 'รายวัน' (รอ retry ไม่มีประโยชน์ ต้องสลับ key แทน)
+    ต่างจากโควต้า 'ต่อนาที' ที่รอสักครู่แล้วลองใหม่กับ key เดิมได้
+    """
+    lower = msg.lower()
+    return "perday" in lower.replace("_", "").replace(" ", "")
+
+
+def _embed_with_retry(texts, task_type, max_retries=3):
+    """ลอง embed ทีละ key ตามลำดับ ถ้า key ไหนชนโควต้ารายวัน สลับ key ถัดไปทันที
+    ถ้าชนโควต้าต่อนาที รอ (backoff) แล้วลองซ้ำกับ key เดิมก่อน
+    """
+    clients = _get_clients()
+    last_err = None
+
+    for client in clients:
+        delay = 15
+        for attempt in range(max_retries):
+            try:
+                result = client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=texts,
+                    config=types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=EMBEDDING_DIM,
+                    ),
+                )
+                return [e.values for e in result.embeddings]
+            except ClientError as e:
+                msg = str(e)
+                last_err = e
+                if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+                    if _is_daily_quota_error(msg):
+                        break  # โควต้ารายวัน ไม่ต้องรอ ไปลอง key ถัดไปเลย
+                    if attempt == max_retries - 1:
+                        break  # โควต้าต่อนาที แต่ retry กับ key นี้ครบแล้ว ไปลอง key ถัดไป
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60)
+                    continue
+                raise  # error อื่นที่ไม่ใช่ quota ไม่ต้องลอง key อื่น โยนออกไปเลย
+
+    key_count = len(clients)
+    raise RuntimeError(
+        f"ใช้ Gemini API key ที่มีอยู่ทั้งหมด ({key_count} ตัว) แล้วแต่ยังชนโควต้าอยู่ "
+        f"ลองใหม่ภายหลัง หรือเพิ่ม key สำรองใน Secrets: {last_err}"
+    )
 
 
 def embed_text(text, task_type="RETRIEVAL_DOCUMENT"):
     """แปลงข้อความ 1 ชิ้นเป็นเวกเตอร์ 768 มิติ (ใช้ตอนค้นหาจากคำถาม ซึ่งมีแค่ 1 ครั้งต่อคำถาม)"""
-    client = get_client()
-    return _embed_with_retry(client, [text], task_type)[0]
+    return _embed_with_retry([text], task_type)[0]
 
 
 def embed_texts_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
     """แปลงข้อความหลายชิ้นพร้อมกันในคำขอเดียว (ลดจำนวน request ลงมาก ประหยัดโควต้ารายวัน)
     ใช้ตอน ingest ไฟล์ PDF ที่มีชิ้นเนื้อหาเยอะๆ
     """
-    client = get_client()
-    return _embed_with_retry(client, texts, task_type)
+    return _embed_with_retry(texts, task_type)
