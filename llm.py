@@ -1,21 +1,19 @@
 """
 llm.py
 ------
-ส่วนตอบคำถาม (chat/generation) ใช้ Groq API แทน Google Gemini
-เหตุผล: โควต้าฟรีของ Groq กว้างกว่ามาก (14,400 request/วัน, 30,000 token/นาที)
-เหมาะกับตอนใช้งานจริงที่มีคนถามพร้อมกันหลายคน
-(ส่วน embedding ย้ายไปรันแบบ local ทั้งหมดแล้ว ดูที่ local_embed.py)
-
-โมเดลที่ใช้: openai/gpt-oss-120b (โมเดลที่ Groq แนะนำปัจจุบัน หลังเลิกใช้ llama-3.3-70b-versatile
-ตั้งแต่กลางปี 2026) ให้คุณภาพดี รองรับหลายภาษารวมไทย
+ส่วนตอบคำถาม (chat/generation) ใช้ Google Gemini API (เหมือนส่วน embedding)
+ใช้ API key ชุดเดียวกับ gemini_embed.py รองรับหลาย key สลับอัตโนมัติเมื่อชนโควต้ารายวัน
 """
 
 import time
 import json
 import streamlit as st
-from groq import Groq
+from google import genai
+from google.genai import types
+from google.genai.errors import ClientError
+from gemini_embed import _get_api_keys
 
-CHAT_MODEL = "openai/gpt-oss-120b"  # ถ้าอยากได้เร็วขึ้น (แลกคุณภาพนิดหน่อย) เปลี่ยนเป็น "openai/gpt-oss-20b" ได้
+CHAT_MODEL = "gemini-3.6-flash"  # รุ่นปัจจุบันที่ Google แนะนำ (แทน gemini-2.5-flash ที่เลิกใช้แล้ว)
 
 SYSTEM_PROMPT = """คุณคือผู้ช่วยตอบคำถามจากคู่มือ/เอกสารขององค์กร
 กติกาสำคัญ:
@@ -32,31 +30,48 @@ SYSTEM_PROMPT = """คุณคือผู้ช่วยตอบคำถา�
 
 
 @st.cache_resource
-def get_client():
-    return Groq(api_key=st.secrets["groq"]["api_key"])
+def _get_clients():
+    return [genai.Client(api_key=k) for k in _get_api_keys()]
 
 
-def _chat_with_retry(messages, max_retries=5):
-    """เรียก chat completion พร้อม retry เมื่อชน rate limit (429) และโชว์ข้อความ error จริงถ้าพังด้วยสาเหตุอื่น"""
-    client = get_client()
-    delay = 15
-    for attempt in range(max_retries):
-        try:
-            response = client.chat.completions.create(
-                model=CHAT_MODEL,
-                messages=messages,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            msg = str(e)
-            if "429" in msg or "rate_limit" in msg.lower():
-                if attempt == max_retries - 1:
-                    raise RuntimeError(f"เกินโควต้าการใช้งานโมเดลแชท ลองใหม่อีกครั้งภายหลัง: {e}") from e
-                time.sleep(delay)
-                delay = min(delay * 2, 60)
-                continue
-            raise RuntimeError(f"เรียก Groq ไม่สำเร็จ: {e}") from e
-    raise RuntimeError("เกินโควต้าซ้ำหลายครั้ง ลองใหม่อีกครั้งภายหลัง")
+def _is_daily_quota_error(msg):
+    lower = msg.lower()
+    return "perday" in lower.replace("_", "").replace(" ", "")
+
+
+def _generate_with_retry(prompt, system_instruction, max_retries=3):
+    """ลองเรียก generate_content ทีละ key ตามลำดับ สลับ key อัตโนมัติเมื่อชนโควต้ารายวัน"""
+    clients = _get_clients()
+    last_err = None
+
+    for client in clients:
+        delay = 15
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=CHAT_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(system_instruction=system_instruction),
+                )
+                return response.text
+            except ClientError as e:
+                msg = str(e)
+                last_err = e
+                if "RESOURCE_EXHAUSTED" in msg or "429" in msg:
+                    if _is_daily_quota_error(msg):
+                        break  # โควต้ารายวัน สลับ key ถัดไปเลย
+                    if attempt == max_retries - 1:
+                        break
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60)
+                    continue
+                raise RuntimeError(f"เรียก Gemini ไม่สำเร็จ: {e}") from e
+
+    key_count = len(clients)
+    raise RuntimeError(
+        f"ใช้ Gemini API key ที่มีอยู่ทั้งหมด ({key_count} ตัว) แล้วแต่ยังชนโควต้าอยู่ "
+        f"ลองใหม่ภายหลัง: {last_err}"
+    )
 
 
 def expand_query(query, n=3):
@@ -73,7 +88,7 @@ def expand_query(query, n=3):
 ตอบเป็น JSON array ของ string เท่านั้น ห้ามมีคำอธิบายหรือข้อความอื่นปน เช่น ["คำ1", "คำ2", "คำ3"]"""
 
     try:
-        text = _chat_with_retry([{"role": "user", "content": prompt}], max_retries=2).strip()
+        text = _generate_with_retry(prompt, system_instruction=None, max_retries=1).strip()
         if text.startswith("```"):
             text = text.strip("`")
             if "\n" in text:
@@ -115,8 +130,4 @@ def generate_answer(query, retrieved_chunks, scope_filename=None):
 
 ตอบเป็นภาษาไทย โดยแปลเนื้อหาที่เกี่ยวข้องแบบตรงตามต้นฉบับ ครบถ้วน ไม่สรุปย่อ:"""
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + scope_instruction},
-        {"role": "user", "content": prompt},
-    ]
-    return _chat_with_retry(messages)
+    return _generate_with_retry(prompt, system_instruction=SYSTEM_PROMPT + scope_instruction)
