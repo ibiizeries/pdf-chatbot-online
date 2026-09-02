@@ -24,15 +24,33 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIM = 768  # ต้องตรงกับ vector(768) ใน supabase_setup.sql
 
 
+def _normalize_to_list(value):
+    """แปลงค่าที่อ่านจาก secrets ให้เป็น list of string เสมอ ไม่ว่าผู้ใช้จะใส่มาเป็น
+    string เดี่ยว หรือ list ก็ตาม (กันเผลอใส่ผิดฟอร์แมต เช่น api_key = ["a", "b"])
+    """
+    if isinstance(value, str):
+        return [value]
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
 def _get_api_keys():
-    """อ่านรายชื่อ API key จาก secrets รองรับทั้งแบบ list (api_keys) และแบบเดี่ยว (api_key)"""
+    """อ่านรายชื่อ API key จาก secrets รองรับทั้งแบบ list (api_keys) และแบบเดี่ยว (api_key)
+    และรองรับกรณีใส่ list ผิดช่องด้วย (เผื่อพลาด)
+    """
     gemini_secrets = st.secrets["gemini"]
+    raw = None
     if "api_keys" in gemini_secrets:
-        keys = [k for k in gemini_secrets["api_keys"] if k]
+        raw = gemini_secrets["api_keys"]
     elif "api_key" in gemini_secrets:
-        keys = [gemini_secrets["api_key"]]
-    else:
-        keys = []
+        raw = gemini_secrets["api_key"]
+
+    if raw is None:
+        raise RuntimeError("ยังไม่ได้ตั้งค่า Gemini API key ใน Secrets (ใส่ [gemini] api_key หรือ api_keys)")
+
+    keys = [str(k).strip() for k in _normalize_to_list(raw) if k and str(k).strip()]
     if not keys:
         raise RuntimeError("ยังไม่ได้ตั้งค่า Gemini API key ใน Secrets (ใส่ [gemini] api_key หรือ api_keys)")
     return keys
