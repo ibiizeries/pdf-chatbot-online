@@ -13,7 +13,7 @@ import html
 import streamlit as st
 from auth import login_gate
 from ingest_utils import extract_pages_from_bytes, chunk_text
-from local_embed import embed_texts_batch
+from gemini_embed import embed_texts_batch
 from llm import generate_answer, expand_query
 from theme import get_css
 import db
